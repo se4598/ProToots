@@ -98,7 +98,7 @@ function main() {
 		// We might have existing statuses in this mutation, therefore we are also searching for those.
 		// For some weird reason, this does not work with the findStatusesAndAddProplates method
 		// below, only with the querySelector.
-		document.querySelectorAll(".status, .detailed-status").forEach((s) => addProplate(s));
+		document.querySelectorAll("[data-id]").forEach((s) => prepareProplate(s));
 	}).observe(document, { subtree: true, childList: true });
 }
 
@@ -109,10 +109,9 @@ function main() {
  */
 function findStatusesAndAddProplates(mutations) {
 	// Checks whether the given n is a status in the Mastodon interface.
-	const isStatus = (n) =>
-		n instanceof HTMLElement && hasClasses(n.classList, "status", "detailed-status");
+	const isStatus = (n) => n instanceof HTMLElement && n.hasAttribute("data-id");
 
-	mutations.flatMap((m) => [...m.addedNodes].filter(isStatus)).forEach((s) => addProplate(s));
+	mutations.flatMap((m) => [...m.addedNodes].filter(isStatus)).forEach((s) => prepareProplate(s));
 }
 
 /**
@@ -216,6 +215,10 @@ async function fetchStatus(statusID) {
 	});
 
 	let status = await response.json();
+
+	// If we have a boost, we care about the original author, not the person who boosted it.
+	if (status.reblog) status = status.reblog;
+
 	return status;
 }
 
@@ -289,16 +292,14 @@ function onError(error) {
 }
 
 /**
- * Adds the pro-plate to the element. The caller needs to ensure that the passed element
- * is defined and that it's either a:
- * 	- <article> with the "status" class or
- * 	- <article> with the "detailed-status" class.
+ * Prepares the observer to add the pro-plate to the element. This is especially useful for caching
+ * of pronouns.
  *
  * Although it's possible to pass raw {@type Element}s, the method only does things on elements of type {@type HTMLElement}.
  *
  * @param {Node | Element | HTMLElement} element The status where the element should be added.
  */
-async function addProplate(element) {
+async function prepareProplate(element) {
 	if (!(element instanceof HTMLElement)) return;
 
 	//check whether element has already had a proplate added
@@ -342,28 +343,60 @@ async function addProplate(element) {
 	// we only process them after we have all required information.
 	element.setAttribute("protoots-checked", "true");
 
-	nametagEl.style.display = "flex";
-	nametagEl.style.alignItems = "baseline";
+	// Fetch the pronouns so they are getting cached.
+	await fetchPronouns(statusId, accountName);
 
-	//create plate
-	const proplate = document.createElement("span");
-	let pronouns = await fetchPronouns(statusId, accountName);
-	if (pronouns == "null" && !logging) {
-		return;
-	}
-	proplate.innerHTML = sanitizePronouns(pronouns);
-	proplate.classList.add("protoots-proplate");
-	if (
-		(host_name == "queer.group" && (accountName == "@vivien" || accountName == "@jasmin")) ||
-		accountName == "@jasmin@queer.group" ||
-		accountName == "@vivien@queer.group"
-	) {
-		//i think you can figure out what this does on your own
-		proplate.classList.add("pog");
-	}
+	// Observe the element for adding the proplate later.
+	observeElement(element, statusId, accountName);
+}
 
-	//add plate to nametag
-	nametagEl.appendChild(proplate);
+/**
+ * @param {HTMLElement} element
+ * @param {string | undefined} statusID
+ * @param {string} accountName
+ */
+function observeElement(element, statusID, accountName) {
+	new IntersectionObserver(
+		async (target, observer) => {
+			// observer.disconnect();
+			let nametagEl = /** @type {HTMLElement|null} */ (
+				element.querySelector(".display-name__html")
+			);
+			if (!nametagEl) {
+				warn(
+					"The element passed to addProplate does not have a .display-name__html, although it should have one.",
+					element,
+				);
+				return;
+			}
+
+			console.log("should add pronouns for ", { statusID, accountName, nametagEl });
+			nametagEl.style.display = "flex";
+			nametagEl.style.alignItems = "baseline";
+
+			//create plate
+			const proplate = document.createElement("span");
+			let pronouns = await fetchPronouns(statusID, accountName);
+			if (pronouns == "null" && !logging) {
+				warn("could not find pronoun for element: ", element);
+				return;
+			}
+			proplate.innerHTML = sanitizePronouns(pronouns);
+			proplate.classList.add("protoots-proplate");
+			if (
+				(host_name == "queer.group" && (accountName == "@vivien" || accountName == "@jasmin")) ||
+				accountName == "@jasmin@queer.group" ||
+				accountName == "@vivien@queer.group"
+			) {
+				//i think you can figure out what this does on your own
+				proplate.classList.add("pog");
+			}
+
+			//add plate to nametag
+			nametagEl.appendChild(proplate);
+		},
+		{ threshold: 0.01 },
+	).observe(element);
 }
 
 /**
